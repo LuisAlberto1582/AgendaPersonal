@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Se despliega UNA sola vez, a mano, desde la consola de AWS. Crea el rol que GitHub Actions
+  asume (sin llaves) para desplegar el stack "mindflow". No puede leer ni escribir datos de DynamoDB.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: LuisAlberto1582/AgendaPersonal
+  GitHubBranch:
+    Type: String
+    Default: main
+  CreateOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Pon 'false' si tu cuenta ya tiene el proveedor token.actions.githubusercontent.com
+
+Conditions:
+  MakeProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mindflow-github-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRoleWithWebIdentity
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/${GitHubBranch}
+      Policies:
+        - PolicyName: mindflow-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: cloudformation:*
+                Resource:
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/mindflow/*
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/aws-sam-cli-managed-default/*
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+              - Effect: Allow
+                Action: cloudformation:GetTemplateSummary
+                Resource: '*'
+              - Effect: Allow
+                Action: s3:*
+                Resource:
+                  - arn:aws:s3:::aws-sam-cli-managed-default-*
+                  - arn:aws:s3:::aws-sam-cli-managed-default-*/*
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PassRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                Resource:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/mindflow-*
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/aws-sam-cli-managed-default-*
+              - Effect: Allow
+                Action: lambda:*
+                Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:mindflow-*
+              - Effect: Allow
+                Action: dynamodb:*Table*
+                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/mindflow-*
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateContinuousBackups
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:TagResource
+                  - dynamodb:UntagResource
+                  - dynamodb:ListTagsOfResource
+                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/mindflow-*
+              # Estos servicios no permiten limitar por nombre antes de crear el recurso
+              - Effect: Allow
+                Action:
+                  - apigateway:*
+                  - cognito-idp:*
+                  - logs:*
+                Resource: '*'
+              # Aunque se filtraran credenciales, este rol nunca toca los datos de la agenda
+              - Effect: Deny
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:ExportTableToPointInTime
+                  - dynamodb:RestoreTableFromBackup
+                Resource: '*'
+
+Outputs:
+  RoleArn:
+    Value: !GetAtt DeployRole.Arn

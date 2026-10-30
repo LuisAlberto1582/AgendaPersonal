@@ -1,0 +1,39 @@
+name: Desplegar backend en AWS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/template.yaml
+      - infra/src/**
+      - .github/workflows/deploy-backend.yml
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Si todavía no configuras AWS, el job se omite en lugar de fallar
+    if: vars.AWS_ROLE_ARN != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/setup-sam@v2
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      - run: sam build --template-file infra/template.yaml --base-dir infra
+      - run: >
+          sam deploy
+          --stack-name mindflow
+          --resolve-s3
+          --capabilities CAPABILITY_IAM
+          --no-confirm-changeset
+          --no-fail-on-empty-changeset
