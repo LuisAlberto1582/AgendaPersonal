@@ -1,0 +1,57 @@
+{
+  "routines": [
+    {
+      "id": "r1",
+      "name": "Rutina Mañana e Higiene Personal",
+      "category": "Personal",
+      "estimatedMin": 45,
+      "actualHistory": [40, 45, 50]
+    },
+    {
+      "id": "r2",
+      "name": "Traslado en Camión al Gym (Ida y Vuelta)",
+      "category": "Transporte",
+      "estimatedMin": 50,
+      "actualHistory": []
+    },
+    {
+      "id": "r3",
+      "name": "Atención Mascota (Comida y Aseo)",
+      "category": "Mascotas",
+      "estimatedMin": 20,
+      "actualHistory": []
+    }
+  ],
+  "backlog": [
+    {
+      "id": "b1",
+      "title": "Cambiar foco descompuesto",
+      "category": "Mantenimiento",
+      "estimatedMin": 15,
+      "createdAt": "2026-10-25T10:00:00.000Z"
+    }
+  ],
+  "daySchedule": [
+    {
+      "id": "s1",
+      "title": "Rutina Mañana & Higiene",
+      "start": "07:00",
+      "end": "08:30",
+      "isFixed": true
+    },
+    {
+      "id": "s2",
+      "title": "Bloque de Trabajo",
+      "start": "08:30",
+      "end": "13:30",
+      "isFixed": true
+    },
+    {
+      "id": "s3",
+      "title": "Ventana Libre (Pendientes o Descanso)",
+      "start": "19:00",
+      "end": "20:00",
+      "isFreeSlot": true
+    }
+  ]
+}
