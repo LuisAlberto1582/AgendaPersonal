@@ -24,9 +24,19 @@ const INITIAL_ROUTINES = [
   { id: 'r2', name: 'Desayuno & Preparación', category: 'Alimentos', estimatedMin: 30, actuals: [25, 30], isNonNegotiable: true, type: 'daily', steps: [] },
   { id: 'r3', name: 'Alimentación y Paseo de Mascotas', category: 'Mascotas', estimatedMin: 35, actuals: [35, 40], isNonNegotiable: false, type: 'daily', steps: [] },
   { id: 'r4', name: 'Traslado al Gym (Camión ida/vuelta)', category: 'Traslados', estimatedMin: 30, actuals: [], isNonNegotiable: false, type: 'daily', steps: [] },
-  { id: 'r5', name: 'Limpieza Superficial Diario (Cocina/Baño)', category: 'Limpieza', estimatedMin: 20, actuals: [18, 22, 25], isNonNegotiable: false, type: 'daily', steps: [] },
+  { id: 'r5', name: 'Limpieza Superficial Diario (Cocina/Baño)', category: 'Limpieza', estimatedMin: 20, actuals: [18, 22, 25], isNonNegotiable: false, type: 'daily', steps: [
+    { id: 'r5s1', name: 'Limpiar cocina', actualsSec: [] },
+    { id: 'r5s2', name: 'Limpiar sala', actualsSec: [] },
+    { id: 'r5s3', name: 'Limpiar baños', actualsSec: [] },
+    { id: 'r5s4', name: 'Limpiar cuarto', actualsSec: [] },
+    { id: 'r5s5', name: 'Cerrar casa', actualsSec: [] }
+  ] },
   { id: 'r6', name: 'Limpieza Profunda Fin de Semana', category: 'Limpieza', estimatedMin: 120, actuals: [110], isNonNegotiable: false, type: 'weekly', steps: [] },
-  { id: 'r7', name: 'Rutina Nocturna y Preparación Dormir', category: 'Personal', estimatedMin: 30, actuals: [30, 28], isNonNegotiable: true, type: 'daily', steps: [] },
+  { id: 'r7', name: 'Rutina Nocturna y Preparación Dormir', category: 'Personal', estimatedMin: 30, actuals: [30, 28], isNonNegotiable: true, type: 'daily', steps: [
+    { id: 'r7s1', name: 'Bañarse', actualsSec: [] },
+    { id: 'r7s2', name: 'Skin care', actualsSec: [] },
+    { id: 'r7s3', name: 'Preparar la ropa', actualsSec: [] }
+  ] },
   { id: 'r8', name: 'Entrenamiento en el Gym', category: 'Ejercicio', estimatedMin: 45, actuals: [], isNonNegotiable: false, type: 'daily', steps: [] },
   { id: 'r9', name: 'Convivencia con esposa', category: 'Familia', estimatedMin: 30, actuals: [], isNonNegotiable: true, type: 'daily', steps: [] }
 ];
