@@ -5,12 +5,16 @@ import { fetchAuthSession } from 'aws-amplify/auth';
 
 const env = import.meta.env;
 const apiUrl = (env.VITE_API_URL || '').trim().replace(/\/+$/, '');
-const userPoolId = (env.VITE_COGNITO_USER_POOL_ID || '').trim();
-const userPoolClientId = (env.VITE_COGNITO_CLIENT_ID || '').trim();
+// El ID del pool siempre lleva la región ("us-east-1_..."); el del cliente nunca.
+// Se reconocen por formato por si las variables quedaron intercambiadas.
+const POOL_ID_RE = /^[a-z]{2}(-[a-z]+)+-\d_[A-Za-z0-9]+$/;
+const cognitoIds = [env.VITE_COGNITO_USER_POOL_ID, env.VITE_COGNITO_CLIENT_ID].map(v => (v || '').trim());
+const userPoolId = cognitoIds.find(v => POOL_ID_RE.test(v)) || cognitoIds[0];
+const userPoolClientId = cognitoIds.find(v => v !== userPoolId) || '';
 
 // Si algún valor no tiene el formato esperado, se queda en modo local en lugar de mostrar un login que no funciona
 const configValid = /^https:\/\/\S+$/.test(apiUrl)
-  && /^[a-z]{2}(-[a-z]+)+-\d_[A-Za-z0-9]+$/.test(userPoolId)
+  && POOL_ID_RE.test(userPoolId)
   && /^[a-z0-9]{20,}$/.test(userPoolClientId);
 
 if ((apiUrl || userPoolId || userPoolClientId) && !configValid) {
