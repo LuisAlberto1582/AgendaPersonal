@@ -85,7 +85,8 @@ Para probar en local: copia `.env.example` como `.env.local`, pon los mismos val
 (CORS ya permite `http://localhost:5173`).
 
 ### Cómo sincroniza
-- Se sincronizan rutinas (con sus tiempos medidos), la bandeja de tareas y el horario fijo. La rutina paso a paso
+- Se sincronizan rutinas (con sus días, bloques y tiempos medidos), la bandeja de tareas (con fecha y hora),
+  el horario fijo y el registro diario de lo hecho (calendario de cumplimiento). La rutina paso a paso
   en curso se queda en el dispositivo donde empezó.
 - `localStorage` sigue siendo la copia de trabajo: la app funciona sin conexión y sube los cambios al reconectar.
 - Cada cambio se sube 1.5 s después de la última edición. Al volver a la pestaña se revisa si otro dispositivo

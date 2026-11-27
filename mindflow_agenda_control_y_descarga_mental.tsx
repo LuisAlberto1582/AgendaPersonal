@@ -4,13 +4,19 @@ import {
   Calendar, Layers, Sparkles, Trash2, ArrowRight, TrendingUp, 
   AlertCircle, ChevronDown, ChevronRight, Home, Dog, Bus, 
   ShieldCheck, RefreshCw, BarChart2, Check, Moon, Sun, Circle, ListChecks, X, Briefcase, Dumbbell, Heart,
-  CloudOff, CloudAlert, CloudCheck, LogOut
+  CloudOff, CloudAlert, CloudCheck, LogOut, ChevronLeft, CalendarCheck, AlertTriangle
 } from 'lucide-react';
 import { useCloudSync } from './useCloudSync.js';
+import CalendarView from './CalendarView.jsx';
+import TaskScheduler from './TaskScheduler.jsx';
+import {
+  ALL_DAYS, BLOCKS, DEFAULT_LAYOUT, WEEKDAYS, addDays, buildDayPlan, formatDayLabel, formatRelativeDay,
+  logRoutine, parseKey, todayKey, weekStart,
+} from './dayPlan.js';
 
-// Horario fijo del día: jornada laboral, hora de entrenar y sueño.
-// La hora de despertar y de dormir se calculan a partir del gym.
-const DEFAULT_SCHEDULE = { workStart: '09:00', workEnd: '18:00', gymStart: '06:45', sleepHours: 8 };
+// Horario fijo: jornada laboral (y qué días se trabaja), hora de entrenar, sueño
+// y hora de despertar los días sin gym ni trabajo. El resto de horas se calcula.
+const DEFAULT_SCHEDULE = { workStart: '09:00', workEnd: '18:00', gymStart: '06:45', sleepHours: 8, workDays: [1, 2, 3, 4, 5], restWake: '08:00' };
 
 // --- INITIAL DEFAULT DATA ---
 // steps: actividades de la rutina; actualsSec guarda cuántos segundos tomó cada vez
@@ -97,8 +103,15 @@ const normalizeRoutines = (list) => {
   // Rutinas guardadas antes de que existieran los pasos: tomar los pasos por defecto
   const loaded = list.map(r => r.steps ? r : { ...r, steps: INITIAL_ROUTINES.find(i => i.id === r.id)?.steps || [] });
   // Rutinas nuevas por defecto (ej. el gym) que aún no estaban guardadas
-  return [...loaded, ...INITIAL_ROUTINES.filter(i => !loaded.some(r => r.id === i.id))];
+  const all = [...loaded, ...INITIAL_ROUTINES.filter(i => !loaded.some(r => r.id === i.id))];
+  // Rutinas guardadas antes de que existieran los días y bloques
+  return all.map(r => ({ block: 'free', days: ALL_DAYS, ...DEFAULT_LAYOUT[r.id], ...r }));
 };
+
+const DEFAULT_ROUTINE_IDS = new Set(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9']);
+
+// Tareas programadas antes de que existieran las fechas: se quedan en el día en que se abren por primera vez
+const normalizeTasks = (list) => list.map(t => t.scheduledTime && !t.scheduledDate ? { ...t, scheduledDate: todayKey() } : t);
 
 const SYNC_BADGES = {
   loading: { Icon: RefreshCw, text: 'Conectando…', className: 'text-slate-400', spin: true },
@@ -113,7 +126,7 @@ export default function App({ cloud = null }) {
   // --- PERSISTENT STATES ---
   const [routines, setRoutines] = useState(() => {
     const saved = localStorage.getItem('mf_routines');
-    return saved ? normalizeRoutines(JSON.parse(saved)) : INITIAL_ROUTINES;
+    return normalizeRoutines(saved ? JSON.parse(saved) : INITIAL_ROUTINES);
   });
 
   // Rutina paso a paso en curso: { routineId, startedAt, lapStartedAt, pausedAt, done: { [stepId]: segundos } }
@@ -131,10 +144,32 @@ export default function App({ cloud = null }) {
 
   const [inboxTasks, setInboxTasks] = useState(() => {
     const saved = localStorage.getItem('mf_inbox');
-    return saved ? JSON.parse(saved) : INITIAL_INBOX_TASKS;
+    return normalizeTasks(saved ? JSON.parse(saved) : INITIAL_INBOX_TASKS);
   });
 
-  const [activeTab, setActiveTab] = useState('timeline'); // 'timeline' | 'inbox' | 'analytics' | 'config'
+  // Registro de lo hecho cada día: { 'YYYY-MM-DD': { plan: [ids], done: { [routineId]: minutos } } }
+  const [dayLog, setDayLog] = useState(() => {
+    const saved = localStorage.getItem('mf_daylog');
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  // Fecha de hoy (se actualiza si la app sigue abierta al pasar la medianoche) y día que se está viendo
+  const [today, setToday] = useState(todayKey);
+  const [selectedDate, setSelectedDate] = useState(todayKey);
+  const todayRef = useRef(today);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const t = todayKey();
+      if (t === todayRef.current) return;
+      const prev = todayRef.current;
+      todayRef.current = t;
+      setToday(t);
+      setSelectedDate(sel => sel === prev ? t : sel);
+    }, 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const [activeTab, setActiveTab] = useState('timeline'); // 'timeline' | 'inbox' | 'calendar' | 'analytics' | 'config'
   
   // --- SPEECH RECOGNITION STATES ---
   const [isListening, setIsListening] = useState(false);
@@ -163,16 +198,21 @@ export default function App({ cloud = null }) {
   }, [fixedSchedule]);
 
   useEffect(() => {
+    localStorage.setItem('mf_daylog', JSON.stringify(dayLog));
+  }, [dayLog]);
+
+  useEffect(() => {
     if (stepSession) localStorage.setItem('mf_step_session', JSON.stringify(stepSession));
     else localStorage.removeItem('mf_step_session');
   }, [stepSession]);
 
-  // Respaldo en la nube (rutinas, bandeja y horario; la rutina en curso se queda en este dispositivo)
-  const syncedState = useMemo(() => ({ routines, inboxTasks, fixedSchedule }), [routines, inboxTasks, fixedSchedule]);
+  // Respaldo en la nube (rutinas, bandeja, horario y registro diario; la rutina en curso se queda en este dispositivo)
+  const syncedState = useMemo(() => ({ routines, inboxTasks, fixedSchedule, dayLog }), [routines, inboxTasks, fixedSchedule, dayLog]);
   const applyRemoteState = useCallback((remote) => {
     if (Array.isArray(remote.routines)) setRoutines(normalizeRoutines(remote.routines));
-    if (Array.isArray(remote.inboxTasks)) setInboxTasks(remote.inboxTasks);
+    if (Array.isArray(remote.inboxTasks)) setInboxTasks(normalizeTasks(remote.inboxTasks));
     if (remote.fixedSchedule) setFixedSchedule({ ...DEFAULT_SCHEDULE, ...remote.fixedSchedule });
+    if (remote.dayLog && typeof remote.dayLog === 'object') setDayLog(remote.dayLog);
   }, []);
   const syncStatus = useCloudSync({
     enabled: Boolean(cloud),
@@ -283,6 +323,7 @@ export default function App({ cloud = null }) {
       }
       return r;
     }));
+    markRoutine(today, activeTimerRoutineId, actualMinutes);
 
     setIsTimerRunning(false);
     setActiveTimerRoutineId(null);
@@ -334,6 +375,11 @@ export default function App({ cloud = null }) {
   const finishStepSession = () => {
     if (!stepSession) return;
     const { routineId, done } = stepSession;
+    const routine = routines.find(r => r.id === routineId);
+    if (routine?.steps.length && routine.steps.every(s => done[s.id] !== undefined)) {
+      const totalSec = routine.steps.reduce((acc, s) => acc + done[s.id], 0);
+      markRoutine(today, routineId, Math.max(1, Math.round(totalSec / 60)));
+    }
     setRoutines(prev => prev.map(r => {
       if (r.id !== routineId) return r;
       const steps = r.steps.map(s => done[s.id] !== undefined ? { ...s, actualsSec: [...(s.actualsSec || []), done[s.id]] } : s);
@@ -386,16 +432,38 @@ export default function App({ cloud = null }) {
   };
 
   const handleToggleTaskComplete = (id) => {
-    setInboxTasks(prev => prev.map(t => t.id === id ? { ...t, completed: !t.completed } : t));
+    setInboxTasks(prev => prev.map(t => t.id === id
+      ? { ...t, completed: !t.completed, completedAt: t.completed ? null : today }
+      : t));
+  };
+
+  const handleScheduleTask = (id, date, time) => {
+    setInboxTasks(prev => prev.map(t => t.id === id ? { ...t, scheduledDate: date, scheduledTime: time || null } : t));
+  };
+
+  const handleUnscheduleTask = (id) => {
+    setInboxTasks(prev => prev.map(t => t.id === id ? { ...t, scheduledDate: null, scheduledTime: null } : t));
   };
 
   const handleDeleteTask = (id) => {
     setInboxTasks(prev => prev.filter(t => t.id !== id));
   };
 
-  const handleAssignTimeToTask = (id, timeString) => {
-    setInboxTasks(prev => prev.map(t => t.id === id ? { ...t, scheduledTime: timeString || null } : t));
+  // --- REGISTRO DIARIO ---
+  // minutes: minutos medidos (0 = marcado a mano), null = desmarcar
+  function markRoutine(key, routineId, minutes) {
+    setDayLog(prev => logRoutine(prev, key, routineId, minutes, routines, today));
+  }
+
+  const isRoutineDone = (key, routineId) => routineId in (dayLog[key]?.done ?? {});
+  const toggleRoutineDone = (key, routineId) => {
+    if (key > today) return;
+    markRoutine(key, routineId, isRoutineDone(key, routineId) ? null : 0);
   };
+
+  // Tareas sin fecha o con fecha vencida (no hechas)
+  const isOverdue = (t) => !t.completed && t.scheduledDate && t.scheduledDate < today;
+  const pendingTasks = inboxTasks.filter(t => !t.completed && (!t.scheduledDate || t.scheduledDate < today));
 
   // Calculate Days Elapsed
   const getDaysElapsed = (isoDateStr) => {
@@ -406,35 +474,26 @@ export default function App({ cloud = null }) {
     return diffDays;
   };
 
-  // --- DAY PLAN: block times derived from the fixed schedule ---
-  const routineMins = (ids) => routines.filter(r => ids.includes(r.id)).reduce((acc, r) => acc + r.estimatedMin, 0);
-  const workStartMin = toMinutes(fixedSchedule.workStart);
-  const workEndMin = toMinutes(fixedSchedule.workEnd);
-  const workMins = (workEndMin - workStartMin + 1440) % 1440;
-  // Mañana: despertar → higiene → camión de ida → entrenamiento → camión de regreso → mascotas y desayuno
-  const gymStartMin = toMinutes(fixedSchedule.gymStart);
-  const commuteOneWayMins = Math.round(routineMins(['r4']) / 2);
-  const leaveHomeMin = gymStartMin - commuteOneWayMins;
-  const gymEndMin = gymStartMin + routineMins(['r8']);
-  const backHomeMin = gymEndMin + (routineMins(['r4']) - commuteOneWayMins);
-  const wakeMin = leaveHomeMin - routineMins(['r1']);
-  const bedtimeMin = wakeMin - fixedSchedule.sleepHours * 60;
-  const morningAvailableMins = Math.max(0, workStartMin - backHomeMin);
-  const morningUsedMins = routineMins(['r3', 'r2']);
-  // Después del trabajo: ventana libre → limpieza y rutina nocturna → convivencia → dormir
-  const bedtimeOfDayMin = ((bedtimeMin % 1440) + 1440) % 1440;
-  const eveningBedtimeMin = bedtimeOfDayMin < workEndMin ? bedtimeOfDayMin + 1440 : bedtimeOfDayMin;
-  const familyStartMin = eveningBedtimeMin - routineMins(['r9']);
-  const nightStartMin = familyStartMin - routineMins(['r5', 'r7']);
-  const freeWindowMins = Math.max(0, nightStartMin - workEndMin);
-  const freeWindowStart = fixedSchedule.workEnd;
+  // --- PLAN DEL DÍA SELECCIONADO: bloques y horas según las rutinas de ese día ---
+  const day = buildDayPlan(selectedDate, routines, fixedSchedule);
+  const isToday = selectedDate === today;
+  const canLog = selectedDate <= today;
+  const dayTasks = inboxTasks
+    .filter(t => t.scheduledDate === selectedDate)
+    .sort((x, y) => (x.scheduledTime || '99').localeCompare(y.scheduledTime || '99'));
+  const dayTasksPendingMins = dayTasks.filter(t => !t.completed).reduce((acc, t) => acc + t.estimatedMin, 0);
+  const freeRoutinesMins = day.blocks.free.reduce((acc, r) => acc + r.estimatedMin, 0);
+  const freeWindowStart = toHHMM(day.freeStartMin);
+  const workMins = day.workMins;
+  const wakeMin = day.wakeMin;
+  const bedtimeMin = day.bedtimeMin;
 
-  // Calculation for Total Daily Capacity
+  // Ocupación del día seleccionado: trabajo + rutinas que tocan + tareas programadas
   const calculateCapacity = () => {
     const totalMinutesInDay = (24 - fixedSchedule.sleepHours) * 60; // waking hours
-    const nonNegotiableMins = routines.filter(r => r.isNonNegotiable).reduce((acc, r) => acc + r.estimatedMin, 0);
-    const optionalRoutinesMins = routines.filter(r => !r.isNonNegotiable && r.type === 'daily').reduce((acc, r) => acc + r.estimatedMin, 0);
-    const scheduledPendingMins = inboxTasks.filter(t => t.scheduledTime && !t.completed).reduce((acc, t) => acc + t.estimatedMin, 0);
+    const nonNegotiableMins = day.active.filter(r => r.isNonNegotiable).reduce((acc, r) => acc + r.estimatedMin, 0);
+    const optionalRoutinesMins = day.routineMins - nonNegotiableMins;
+    const scheduledPendingMins = dayTasksPendingMins;
 
     const totalCommitted = workMins + nonNegotiableMins + optionalRoutinesMins + scheduledPendingMins;
     const freeMinutes = Math.max(0, totalMinutesInDay - totalCommitted);
@@ -444,44 +503,66 @@ export default function App({ cloud = null }) {
   };
 
   const capacity = calculateCapacity();
+  const dayDoneCount = day.active.filter(r => isRoutineDone(selectedDate, r.id)).length + dayTasks.filter(t => t.completed).length;
+  const dayTotalCount = day.active.length + dayTasks.length;
 
-  // Fila de rutina en el cronograma: nombre (abre el detalle) + botón para medir
-  const renderRoutineRow = (r, color) => (
-    <div key={r.id} className="flex items-center justify-between bg-slate-950/70 p-3 rounded-xl border border-slate-800">
-      <div>
-        <button
-          onClick={() => setSelectedRoutineId(r.id)}
-          className="font-semibold text-sm text-slate-200 hover:text-indigo-300 transition flex items-center gap-1 text-left"
-          title="Ver actividades de la rutina"
-        >
-          {r.name}
-          <ChevronRight className="w-4 h-4 text-slate-500" />
-        </button>
-        <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-xs text-slate-400">{r.estimatedMin} min est.</span>
-          {r.steps?.length > 0 && (
-            <span className="text-xs text-slate-500 flex items-center gap-1">
-              <ListChecks className="w-3 h-3" /> {r.steps.length} pasos
-            </span>
-          )}
-          {r.isNonNegotiable ? (
-            <span className="text-[10px] text-amber-400/90 bg-amber-400/10 px-1.5 py-0.5 rounded">No negociable</span>
-          ) : (
-            <span className={`text-[10px] px-2 py-0.5 rounded border ${CATEGORY_COLORS[r.category]}`}>
-              {r.category}
-            </span>
-          )}
+  // Fila de rutina en el cronograma: marcar como hecha + nombre (abre el detalle) + medir (solo hoy)
+  const renderRoutineRow = (r, color) => {
+    const done = isRoutineDone(selectedDate, r.id);
+    const loggedMins = dayLog[selectedDate]?.done?.[r.id];
+    return (
+      <div key={r.id} className={`flex items-center justify-between gap-2 bg-slate-950/70 p-3 rounded-xl border ${done ? 'border-emerald-500/40' : 'border-slate-800'}`}>
+        <div className="flex items-center gap-3 min-w-0">
+          <button
+            onClick={() => toggleRoutineDone(selectedDate, r.id)}
+            disabled={!canLog}
+            className="shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+            title={canLog ? (done ? 'Desmarcar' : 'Marcar como hecha') : 'Día futuro'}
+          >
+            {done ? <CheckCircle className="w-5 h-5 text-emerald-400" /> : <Circle className="w-5 h-5 text-slate-600 hover:text-slate-400" />}
+          </button>
+          <div className="min-w-0">
+            <button
+              onClick={() => setSelectedRoutineId(r.id)}
+              className={`font-semibold text-sm hover:text-indigo-300 transition flex items-center gap-1 text-left ${done ? 'text-slate-400' : 'text-slate-200'}`}
+              title="Ver actividades de la rutina"
+            >
+              {r.name}
+              <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
+            </button>
+            <div className="flex flex-wrap items-center gap-2 mt-0.5">
+              <span className="text-xs text-slate-400">{r.estimatedMin} min est.</span>
+              {done && loggedMins > 0 && <span className="text-xs text-emerald-400">Hecha en {loggedMins} min</span>}
+              {r.steps?.length > 0 && (
+                <span className="text-xs text-slate-500 flex items-center gap-1">
+                  <ListChecks className="w-3 h-3" /> {r.steps.length} pasos
+                </span>
+              )}
+              {r.isNonNegotiable ? (
+                <span className="text-[10px] text-amber-400/90 bg-amber-400/10 px-1.5 py-0.5 rounded">No negociable</span>
+              ) : (
+                <span className={`text-[10px] px-2 py-0.5 rounded border ${CATEGORY_COLORS[r.category] || 'border-slate-700 text-slate-400'}`}>
+                  {r.category}
+                </span>
+              )}
+            </div>
+          </div>
         </div>
+        {isToday && (
+          <button
+            onClick={() => handleMeasure(r.id)}
+            className={`shrink-0 px-3 py-1.5 hover:text-white rounded-lg text-xs font-medium transition flex items-center gap-1.5 border ${MEASURE_BUTTON_STYLES[color]}`}
+          >
+            <Play className="w-3.5 h-3.5" />
+            <span>Medir</span>
+          </button>
+        )}
       </div>
-      <button
-        onClick={() => handleMeasure(r.id)}
-        className={`px-3 py-1.5 hover:text-white rounded-lg text-xs font-medium transition flex items-center gap-1.5 border ${MEASURE_BUTTON_STYLES[color]}`}
-      >
-        <Play className="w-3.5 h-3.5" />
-        <span>Medir</span>
-      </button>
-    </div>
-  );
+    );
+  };
+
+  const sectionClass = 'bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 space-y-3';
+  const sectionHeader = 'flex items-center justify-between border-b border-slate-800 pb-2';
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
@@ -517,7 +598,7 @@ export default function App({ cloud = null }) {
           {/* CAPACITY SUMMARY BADGE */}
           <div className="flex items-center gap-3 bg-slate-800/80 px-3.5 py-1.5 rounded-xl border border-slate-700/60 text-xs w-full sm:w-auto justify-between sm:justify-start">
             <div>
-              <span className="text-slate-400 block text-[10px] uppercase font-semibold">Ocupación del Día</span>
+              <span className="text-slate-400 block text-[10px] uppercase font-semibold">Ocupación {isToday ? 'de hoy' : formatRelativeDay(selectedDate, today).toLowerCase()}</span>
               <span className={`font-bold ${capacity.percentUsed > 85 ? 'text-rose-400' : 'text-indigo-400'}`}>
                 {Math.floor(capacity.totalCommitted / 60)}h {capacity.totalCommitted % 60}m ({capacity.percentUsed}%)
               </span>
@@ -556,11 +637,23 @@ export default function App({ cloud = null }) {
           >
             <Layers className="w-4 h-4" />
             <span>Bandeja & Pendientes</span>
-            {inboxTasks.filter(t => !t.completed && !t.scheduledTime).length > 0 && (
+            {pendingTasks.length > 0 && (
               <span className="bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
-                {inboxTasks.filter(t => !t.completed && !t.scheduledTime).length}
+                {pendingTasks.length}
               </span>
             )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('calendar')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium transition-all shrink-0 ${
+              activeTab === 'calendar'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <CalendarCheck className="w-4 h-4" />
+            <span>Calendario</span>
           </button>
 
           <button
@@ -671,161 +764,194 @@ export default function App({ cloud = null }) {
             
             {/* LEFT COLUMN: VISUAL DAY SCHEDULE (2 COLS) */}
             <div className="lg:col-span-2 space-y-4">
-              <div className="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-slate-800">
-                <div>
-                  <h2 className="font-bold text-base text-white flex items-center gap-2">
-                    <Calendar className="w-5 h-5 text-indigo-400" />
-                    Estructura de Tu Día
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    No negociables fijos + Bloques de rutinas + Huecos libres detectados
-                  </p>
+              {/* SELECTOR DE DÍA */}
+              <div className="bg-slate-900 p-3 rounded-2xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <button onClick={() => setSelectedDate(addDays(selectedDate, -7))} className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400" title="Semana anterior">
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <div className="text-center">
+                    <h2 className="font-bold text-base text-white flex items-center justify-center gap-2">
+                      <Calendar className="w-5 h-5 text-indigo-400" />
+                      {formatDayLabel(selectedDate)}{isToday ? ' (hoy)' : ''}
+                    </h2>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      {day.isWorkDay ? 'Día de trabajo' : 'Día libre'}{day.hasGym ? ' • con gym' : ''} • {dayDoneCount} de {dayTotalCount} hechas
+                      {' • '}<span className={capacity.percentUsed > 85 ? 'text-rose-400' : 'text-emerald-400'}>{capacity.percentUsed > 85 ? 'Saturado' : 'Equilibrado'}</span>
+                    </p>
+                  </div>
+                  <button onClick={() => setSelectedDate(addDays(selectedDate, 7))} className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400" title="Semana siguiente">
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
                 </div>
-                <div className="text-right">
-                  <span className="text-xs text-slate-400 block">Capacidad</span>
-                  <span className={`text-xs font-bold ${capacity.percentUsed > 85 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                    {capacity.percentUsed > 85 ? 'Saturado' : 'Equilibrado'}
-                  </span>
+                <div className="grid grid-cols-7 gap-1">
+                  {Array.from({ length: 7 }, (_, i) => addDays(weekStart(selectedDate), i)).map(k => (
+                    <button
+                      key={k}
+                      onClick={() => setSelectedDate(k)}
+                      className={`py-1.5 rounded-lg text-center transition ${
+                        k === selectedDate ? 'bg-indigo-600 text-white' : 'bg-slate-950 text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      <span className="block text-[10px] opacity-80">{WEEKDAYS.find(w => w.d === parseKey(k).getDay()).short}</span>
+                      <span className={`block text-xs ${k === today ? 'font-extrabold underline underline-offset-2' : 'font-semibold'}`}>{parseKey(k).getDate()}</span>
+                    </button>
+                  ))}
                 </div>
+                {!isToday && (
+                  <button onClick={() => setSelectedDate(today)} className="w-full text-xs text-indigo-400 hover:text-indigo-300">
+                    Volver a hoy
+                  </button>
+                )}
               </div>
 
               {/* TIMELINE LIST */}
               <div className="space-y-3">
-                {/* 1. WAKE UP: PETS */}
-                <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 space-y-3">
-                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                    <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
-                      <Sun className="w-4 h-4" /> {toHHMM(wakeMin)} - {toHHMM(leaveHomeMin)} | AL DESPERTAR
-                    </span>
+                {/* 1. AL DESPERTAR */}
+                {day.blocks.wake.length > 0 && (
+                  <div className={sectionClass}>
+                    <div className={sectionHeader}>
+                      <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+                        <Sun className="w-4 h-4" /> {toHHMM(day.wakeMin)} - {toHHMM(day.hasGym ? day.leaveHomeMin : day.backHomeMin)} | AL DESPERTAR
+                      </span>
+                    </div>
+                    {day.blocks.wake.map(r => renderRoutineRow(r, 'amber'))}
                   </div>
+                )}
 
-                  {routines.filter(r => r.id === 'r1').map(r => renderRoutineRow(r, 'amber'))}
-                </div>
-
-                {/* 2. GYM: COMMUTE + WORKOUT */}
-                <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 space-y-3">
-                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                    <span className="text-xs font-bold text-orange-400 flex items-center gap-1.5">
-                      <Dumbbell className="w-4 h-4" /> {toHHMM(leaveHomeMin)} - {toHHMM(backHomeMin)} | GYM
-                    </span>
-                    <span className="text-[10px] bg-orange-500/20 text-orange-300 border border-orange-500/30 px-2 py-0.5 rounded-full font-medium">
-                      Entrenas {fixedSchedule.gymStart} - {toHHMM(gymEndMin)}
-                    </span>
+                {/* 2. GYM: TRASLADO + ENTRENAMIENTO */}
+                {day.hasGym && (
+                  <div className={sectionClass}>
+                    <div className={sectionHeader}>
+                      <span className="text-xs font-bold text-orange-400 flex items-center gap-1.5">
+                        <Dumbbell className="w-4 h-4" /> {toHHMM(day.leaveHomeMin)} - {toHHMM(day.backHomeMin)} | GYM
+                      </span>
+                      <span className="text-[10px] bg-orange-500/20 text-orange-300 border border-orange-500/30 px-2 py-0.5 rounded-full font-medium">
+                        Entrenas {fixedSchedule.gymStart} - {toHHMM(day.gymEndMin)}
+                      </span>
+                    </div>
+                    {day.blocks.gym.map(r => renderRoutineRow(r, 'orange'))}
                   </div>
+                )}
 
-                  {routines.filter(r => r.id === 'r4' || r.id === 'r8').map(r => renderRoutineRow(r, 'orange'))}
-                </div>
-
-                {/* 3. BEFORE WORK */}
-                <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 space-y-3">
-                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                    <span className="text-xs font-bold text-indigo-400 flex items-center gap-1.5">
-                      <Clock className="w-4 h-4" /> {toHHMM(backHomeMin)} - {fixedSchedule.workStart} | ANTES DEL TRABAJO
-                    </span>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
-                      morningUsedMins > morningAvailableMins
-                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                        : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
-                    }`}>
-                      {morningUsedMins} / {morningAvailableMins} min
-                    </span>
+                {/* 3. MAÑANA EN CASA / ANTES DEL TRABAJO */}
+                {day.blocks.home.length > 0 && (
+                  <div className={sectionClass}>
+                    <div className={sectionHeader}>
+                      <span className="text-xs font-bold text-indigo-400 flex items-center gap-1.5">
+                        <Clock className="w-4 h-4" /> {toHHMM(day.backHomeMin)} - {day.isWorkDay ? fixedSchedule.workStart : toHHMM(day.homeEndMin)} | {day.isWorkDay ? 'ANTES DEL TRABAJO' : 'MAÑANA EN CASA'}
+                      </span>
+                      {day.isWorkDay && (
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
+                          day.homeMins > day.homeAvailableMins
+                            ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                            : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
+                        }`}>
+                          {day.homeMins} / {day.homeAvailableMins} min
+                        </span>
+                      )}
+                    </div>
+                    {day.blocks.home.map(r => renderRoutineRow(r, 'indigo'))}
                   </div>
+                )}
 
-                  {['r3', 'r2'].map(id => routines.find(r => r.id === id)).filter(Boolean).map(r => renderRoutineRow(r, 'indigo'))}
-                </div>
-
-                {/* 4. WORK BLOCK */}
-                <div className="bg-sky-950/30 border border-sky-500/30 rounded-2xl p-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-sky-400 flex items-center gap-1.5">
-                      <Briefcase className="w-4 h-4" /> {fixedSchedule.workStart} - {fixedSchedule.workEnd} | TRABAJO
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-slate-400">{formatDuration(workMins)}</span>
-                      <span className="text-[10px] text-amber-400/90 bg-amber-400/10 px-1.5 py-0.5 rounded">No negociable</span>
+                {/* 4. TRABAJO */}
+                {day.isWorkDay && (
+                  <div className="bg-sky-950/30 border border-sky-500/30 rounded-2xl p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-sky-400 flex items-center gap-1.5">
+                        <Briefcase className="w-4 h-4" /> {fixedSchedule.workStart} - {fixedSchedule.workEnd} | TRABAJO
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-400">{formatDuration(workMins)}</span>
+                        <span className="text-[10px] text-amber-400/90 bg-amber-400/10 px-1.5 py-0.5 rounded">No negociable</span>
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
 
-                {/* FREE WINDOW HIGHLIGHT */}
+                {/* 5. TIEMPO LIBRE: rutinas de tiempo libre + tareas programadas para este día */}
                 <div className="bg-gradient-to-r from-emerald-950/40 via-slate-900 to-slate-900 border border-dashed border-emerald-500/40 rounded-2xl p-4 space-y-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold">
                       <Sparkles className="w-4 h-4" />
-                      <span>VENTANA LIBRE DETECTADA ({freeWindowStart} - {toHHMM(nightStartMin)})</span>
+                      <span>{day.isWorkDay ? 'VENTANA LIBRE' : 'DÍA LIBRE'} ({freeWindowStart} - {toHHMM(day.nightStartMin)})</span>
                     </div>
-                    <span className="text-xs text-slate-400">
-                      {Math.max(0, freeWindowMins - capacity.scheduledPendingMins)} de {freeWindowMins} min disponibles
+                    <span className={`text-xs ${freeRoutinesMins + dayTasksPendingMins > day.freeWindowMins ? 'text-rose-400' : 'text-slate-400'}`}>
+                      {Math.max(0, day.freeWindowMins - freeRoutinesMins - dayTasksPendingMins)} de {day.freeWindowMins} min disponibles
                     </span>
                   </div>
-                  <p className="text-xs text-slate-400">
-                    Espacio ideal para asignarle pendientes de tu bandeja sin saturar tu día.
-                  </p>
 
-                  {/* TASKS SCHEDULED FOR THIS WINDOW */}
-                  {inboxTasks.filter(t => t.scheduledTime && !t.completed).length === 0 ? (
+                  {day.blocks.free.map(r => renderRoutineRow(r, 'indigo'))}
+
+                  {dayTasks.length === 0 ? (
                     <div className="text-center py-3 bg-slate-950/40 rounded-xl border border-slate-800/80 text-xs text-slate-500">
-                      No has asignado ningún pendiente a esta ventana hoy. ¡Aprovéchala para descansar o arrastra una tarea!
+                      No hay pendientes programados para este día. Asígnale uno desde "Pendientes por programar".
                     </div>
                   ) : (
                     <div className="space-y-2">
-                      {inboxTasks.filter(t => t.scheduledTime && !t.completed).map(task => (
-                        <div key={task.id} className="flex items-center justify-between bg-slate-950 p-3 rounded-xl border border-slate-800">
+                      {dayTasks.map(task => (
+                        <div key={task.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-950 p-3 rounded-xl border border-slate-800">
                           <div className="flex items-center gap-3">
                             <button
                               onClick={() => handleToggleTaskComplete(task.id)}
-                              className="text-slate-500 hover:text-emerald-400 transition"
+                              className={`transition ${task.completed ? 'text-emerald-400' : 'text-slate-500 hover:text-emerald-400'}`}
+                              title={task.completed ? 'Marcar como no hecha' : 'Marcar como hecha'}
                             >
-                              <CheckCircle className="w-5 h-5" />
+                              {task.completed ? <CheckCircle className="w-5 h-5" /> : <Circle className="w-5 h-5" />}
                             </button>
                             <div>
-                              <span className="text-sm text-slate-200 font-medium block">{task.title}</span>
+                              <span className={`text-sm font-medium block ${task.completed ? 'line-through text-slate-500' : 'text-slate-200'}`}>{task.title}</span>
                               <div className="flex items-center gap-2 text-[11px] text-slate-400">
-                                <span>{task.scheduledTime} hrs</span>
+                                <span>{task.scheduledTime ? `${task.scheduledTime} hrs` : 'Sin hora'}</span>
                                 <span>•</span>
                                 <span>{task.estimatedMin} min</span>
                               </div>
                             </div>
                           </div>
-                          <button
-                            onClick={() => handleAssignTimeToTask(task.id, null)}
-                            className="text-xs text-rose-400 hover:underline"
-                          >
-                            Desprogramar
-                          </button>
+                          {!task.completed && (
+                            <div className="flex items-center gap-3 pl-8 sm:pl-0">
+                              <TaskScheduler task={task} today={today} suggestedDate={selectedDate} onSchedule={handleScheduleTask} label="Mover" compact />
+                              <button onClick={() => handleUnscheduleTask(task.id)} className="text-xs text-rose-400 hover:underline">
+                                Quitar
+                              </button>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
 
-                {/* 5. EVENING & SUPERFICIAL CLEANING */}
-                <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 space-y-3">
-                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                    <span className="text-xs font-bold text-purple-400 flex items-center gap-1.5">
-                      <Home className="w-4 h-4" /> {toHHMM(nightStartMin)} - {toHHMM(familyStartMin)} | LIMPIEZA DIARIA Y NOCHE
-                    </span>
+                {/* 6. LIMPIEZA DIARIA Y NOCHE */}
+                {day.blocks.night.length > 0 && (
+                  <div className={sectionClass}>
+                    <div className={sectionHeader}>
+                      <span className="text-xs font-bold text-purple-400 flex items-center gap-1.5">
+                        <Home className="w-4 h-4" /> {toHHMM(day.nightStartMin)} - {toHHMM(day.familyStartMin)} | LIMPIEZA DIARIA Y NOCHE
+                      </span>
+                    </div>
+                    {day.blocks.night.map(r => renderRoutineRow(r, 'purple'))}
                   </div>
+                )}
 
-                  {routines.filter(r => r.id === 'r5' || r.id === 'r7').map(r => renderRoutineRow(r, 'purple'))}
-                </div>
-
-                {/* 6. TIME WITH SPOUSE */}
-                <div className="bg-pink-950/20 border border-pink-500/30 rounded-2xl p-4 space-y-3">
-                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                    <span className="text-xs font-bold text-pink-400 flex items-center gap-1.5">
-                      <Heart className="w-4 h-4" /> {toHHMM(familyStartMin)} - {toHHMM(bedtimeMin)} | CONVIVENCIA CON ESPOSA
-                    </span>
+                {/* 7. CONVIVENCIA */}
+                {day.blocks.family.length > 0 && (
+                  <div className="bg-pink-950/20 border border-pink-500/30 rounded-2xl p-4 space-y-3">
+                    <div className={sectionHeader}>
+                      <span className="text-xs font-bold text-pink-400 flex items-center gap-1.5">
+                        <Heart className="w-4 h-4" /> {toHHMM(day.familyStartMin)} - {toHHMM(day.bedtimeMin)} | CONVIVENCIA CON ESPOSA
+                      </span>
+                    </div>
+                    {day.blocks.family.map(r => renderRoutineRow(r, 'pink'))}
                   </div>
+                )}
 
-                  {routines.filter(r => r.id === 'r9').map(r => renderRoutineRow(r, 'pink'))}
-                </div>
-
-                {/* 7. SLEEP BLOCK */}
+                {/* 8. DORMIR (según la hora de despertar del día siguiente) */}
                 <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-4">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
-                      <Moon className="w-4 h-4" /> {toHHMM(bedtimeMin)} - {toHHMM(wakeMin)} | DORMIR
+                      <Moon className="w-4 h-4" /> {toHHMM(day.bedtimeMin)} - {toHHMM(day.nextWakeMin)} | DORMIR
                     </span>
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-slate-400">{formatDuration(fixedSchedule.sleepHours * 60)} de descanso</span>
@@ -914,45 +1040,50 @@ export default function App({ cloud = null }) {
                 </form>
               </div>
 
-              {/* UNASSIGNED PENDING TASKS LIST */}
+              {/* PENDIENTES SIN FECHA O ATRASADOS */}
               <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">
                   <h3 className="font-bold text-xs text-slate-300 uppercase tracking-wider">
-                    Pendientes Sin Programar ({inboxTasks.filter(t => !t.scheduledTime && !t.completed).length})
+                    Pendientes por programar ({pendingTasks.length})
                   </h3>
-                  <span className="text-[10px] text-slate-500">¿Tienes hueco hoy?</span>
+                  <span className="text-[10px] text-slate-500">Elige día y hora</span>
                 </div>
 
-                <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
-                  {inboxTasks.filter(t => !t.scheduledTime && !t.completed).length === 0 ? (
+                <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
+                  {pendingTasks.length === 0 ? (
                     <p className="text-xs text-slate-500 text-center py-6">
-                      ¡Tu mente está libre! No tienes pendientes en bandeja.
+                      ¡Tu mente está libre! No tienes pendientes sin fecha.
                     </p>
                   ) : (
-                    inboxTasks.filter(t => !t.scheduledTime && !t.completed).map(task => {
+                    pendingTasks.map(task => {
                       const daysOld = getDaysElapsed(task.createdAt);
                       return (
-                        <div key={task.id} className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 space-y-2">
+                        <div key={task.id} className={`bg-slate-950 p-3 rounded-xl border space-y-2 ${isOverdue(task) ? 'border-rose-500/40' : 'border-slate-800/80'}`}>
                           <div className="flex items-start justify-between gap-2">
                             <span className="text-xs text-slate-200 font-medium leading-snug">{task.title}</span>
                             <span className={`text-[9px] px-1.5 py-0.5 rounded border shrink-0 ${CATEGORY_COLORS[task.category]}`}>
                               {task.category}
                             </span>
                           </div>
-
-                          <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-800/60">
-                            <span className={daysOld > 3 ? 'text-amber-400 font-medium' : ''}>
-                              Hace {daysOld === 0 ? 'hoy' : `${daysOld} d`}
+                          {isOverdue(task) && (
+                            <span className="text-[10px] text-rose-300 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" /> Atrasada: era para {formatRelativeDay(task.scheduledDate, today).toLowerCase()}
                             </span>
-                            <span>{task.estimatedMin} min</span>
+                          )}
 
-                            <button
-                              onClick={() => handleAssignTimeToTask(task.id, freeWindowStart)}
-                              className="text-xs text-indigo-400 hover:text-indigo-300 font-medium flex items-center gap-1"
-                            >
-                              <span>Programar hoy {freeWindowStart}</span>
-                              <ArrowRight className="w-3 h-3" />
-                            </button>
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400 pt-1 border-t border-slate-800/60">
+                            <span className={daysOld > 3 ? 'text-amber-400 font-medium' : ''}>
+                              {daysOld === 0 ? 'Creada hoy' : `Hace ${daysOld} d`} • {task.estimatedMin} min
+                            </span>
+                            <TaskScheduler
+                              task={task}
+                              today={today}
+                              suggestedDate={selectedDate}
+                              suggestedTime={freeWindowStart}
+                              onSchedule={handleScheduleTask}
+                              label={isOverdue(task) ? 'Reprogramar' : 'Programar'}
+                              compact
+                            />
                           </div>
                         </div>
                       );
@@ -1046,18 +1177,27 @@ export default function App({ cloud = null }) {
                             </span>
                           </div>
 
-                          <div className="flex items-center gap-2">
-                            {task.scheduledTime ? (
-                              <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs font-medium">
-                                Agenda: {task.scheduledTime}
-                              </span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {task.completed ? (
+                              task.completedAt && (
+                                <span className="text-xs text-emerald-400/80">Hecha: {formatRelativeDay(task.completedAt, today).toLowerCase()}</span>
+                              )
+                            ) : task.scheduledDate ? (
+                              <>
+                                <button
+                                  onClick={() => { setSelectedDate(task.scheduledDate); setActiveTab('timeline'); }}
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border ${isOverdue(task)
+                                    ? 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                                    : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'}`}
+                                  title="Ver ese día"
+                                >
+                                  {isOverdue(task) ? 'Atrasada: ' : 'Agenda: '}
+                                  {formatRelativeDay(task.scheduledDate, today)}{task.scheduledTime ? ` ${task.scheduledTime}` : ''}
+                                </button>
+                                <TaskScheduler task={task} today={today} suggestedDate={selectedDate} onSchedule={handleScheduleTask} label="Mover" compact />
+                              </>
                             ) : (
-                              <button
-                                onClick={() => handleAssignTimeToTask(task.id, freeWindowStart)}
-                                className="px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white rounded-lg text-xs font-medium transition"
-                              >
-                                Programar hoy
-                              </button>
+                              <TaskScheduler task={task} today={today} suggestedDate={selectedDate} suggestedTime={freeWindowStart} onSchedule={handleScheduleTask} />
                             )}
 
                             <button
@@ -1078,6 +1218,19 @@ export default function App({ cloud = null }) {
             </div>
 
           </div>
+        )}
+
+        {/* TAB: CALENDARIO DE CUMPLIMIENTO */}
+        {activeTab === 'calendar' && (
+          <CalendarView
+            routines={routines}
+            tasks={inboxTasks}
+            dayLog={dayLog}
+            today={today}
+            onToggleRoutine={toggleRoutineDone}
+            onToggleTask={handleToggleTaskComplete}
+            onOpenDay={(key) => { setSelectedDate(key); setActiveTab('timeline'); }}
+          />
         )}
 
         {/* TAB 3: ANALÍTICA Y EFICIENCIA DE TIEMPO REAL */}
@@ -1177,11 +1330,12 @@ export default function App({ cloud = null }) {
                 <Briefcase className="w-4 h-4 text-sky-400" />
                 Horario fijo: trabajo y sueño
               </span>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 {[
                   ['workStart', 'Entrada al trabajo'],
                   ['workEnd', 'Salida del trabajo'],
-                  ['gymStart', 'Empiezo a entrenar']
+                  ['gymStart', 'Empiezo a entrenar'],
+                  ['restWake', 'Despertar en días libres']
                 ].map(([key, label]) => (
                   <label key={key} className="text-[10px] text-slate-400 block">
                     {label}
@@ -1206,58 +1360,108 @@ export default function App({ cloud = null }) {
                   </select>
                 </label>
               </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] text-slate-400">Días de trabajo:</span>
+                <DayToggles
+                  days={fixedSchedule.workDays}
+                  onChange={(workDays) => setFixedSchedule(prev => ({ ...prev, workDays }))}
+                />
+              </div>
               <p className="text-[11px] text-slate-500">
-                Trabajas {formatDuration(workMins)}. Para entrenar a las {fixedSchedule.gymStart} te despiertas a las {toHHMM(wakeMin)} y te duermes a las {toHHMM(bedtimeMin)}.
-                Los bloques de "Mi Día" se acomodan con estos horarios y con los minutos de cada rutina.
+                {formatDayLabel(selectedDate)}: te despiertas a las {toHHMM(wakeMin)} y te duermes a las {toHHMM(bedtimeMin)}.
+                Los días con gym la hora de despertar sale de la hora de entrenar; los días de trabajo sin gym, de la entrada al trabajo;
+                los días libres, de "Despertar en días libres". La hora de dormir depende de a qué hora toca despertar al día siguiente.
               </p>
             </div>
 
             <div className="space-y-3">
               {routines.map(routine => (
-                <div key={routine.id} className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                  <div>
-                    <span className="font-semibold text-sm text-slate-200 block">{routine.name}</span>
-                    <span className="text-xs text-slate-500">Categoría: {routine.category} • Tipo: {routine.type}</span>
-                  </div>
-
-                  <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
-                    <button
-                      onClick={() => setSelectedRoutineId(routine.id)}
-                      className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded-lg text-xs text-indigo-300 font-medium flex items-center gap-1.5 transition"
-                    >
-                      <ListChecks className="w-3.5 h-3.5" />
-                      <span>Pasos ({routine.steps?.length || 0})</span>
-                    </button>
-
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-slate-400">Minutos:</span>
-                      <input
-                        type="number"
-                        value={routine.estimatedMin}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value, 10) || 0;
-                          setRoutines(prev => prev.map(r => r.id === routine.id ? { ...r, estimatedMin: val } : r));
-                        }}
-                        className="w-16 bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-xs text-center font-bold text-indigo-300"
-                      />
+                <div key={routine.id} className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                    <div>
+                      <span className="font-semibold text-sm text-slate-200 block">{routine.name}</span>
+                      <span className="text-xs text-slate-500">Categoría: {routine.category}</span>
                     </div>
 
-                    <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={routine.isNonNegotiable}
-                        onChange={(e) => {
-                          const checked = e.target.checked;
-                          setRoutines(prev => prev.map(r => r.id === routine.id ? { ...r, isNonNegotiable: checked } : r));
-                        }}
-                        className="rounded border-slate-700 text-indigo-600 focus:ring-0"
+                    <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+                      <button
+                        onClick={() => setSelectedRoutineId(routine.id)}
+                        className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded-lg text-xs text-indigo-300 font-medium flex items-center gap-1.5 transition"
+                      >
+                        <ListChecks className="w-3.5 h-3.5" />
+                        <span>Pasos ({routine.steps?.length || 0})</span>
+                      </button>
+
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-slate-400">Minutos:</span>
+                        <input
+                          type="number"
+                          value={routine.estimatedMin}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value, 10) || 0;
+                            setRoutines(prev => prev.map(r => r.id === routine.id ? { ...r, estimatedMin: val } : r));
+                          }}
+                          className="w-16 bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-xs text-center font-bold text-indigo-300"
+                        />
+                      </div>
+
+                      <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={routine.isNonNegotiable}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setRoutines(prev => prev.map(r => r.id === routine.id ? { ...r, isNonNegotiable: checked } : r));
+                          }}
+                          className="rounded border-slate-700 text-indigo-600 focus:ring-0"
+                        />
+                        <span>No negociable</span>
+                      </label>
+
+                      {!DEFAULT_ROUTINE_IDS.has(routine.id) && (
+                        <button
+                          onClick={() => window.confirm(`¿Eliminar "${routine.name}"? Su historial en el calendario se conserva.`)
+                            && setRoutines(prev => prev.filter(r => r.id !== routine.id))}
+                          className="p-1.5 text-slate-500 hover:text-rose-400 transition rounded-lg hover:bg-slate-800"
+                          title="Eliminar rutina"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-2 border-t border-slate-800/70">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-400">Días:</span>
+                      <DayToggles
+                        days={routine.days}
+                        onChange={(days) => setRoutines(prev => prev.map(r => r.id === routine.id ? { ...r, days } : r))}
                       />
-                      <span>No negociable</span>
+                    </div>
+                    <label className="flex items-center gap-2 text-[10px] text-slate-400">
+                      Bloque:
+                      <select
+                        value={routine.block}
+                        onChange={(e) => {
+                          const block = e.target.value;
+                          setRoutines(prev => prev.map(r => r.id === routine.id ? { ...r, block } : r));
+                        }}
+                        className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200"
+                      >
+                        {Object.entries(BLOCKS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                      </select>
                     </label>
+                    {routine.days.length === 0 && <span className="text-[10px] text-amber-400">Sin días: no aparece en ningún día</span>}
                   </div>
                 </div>
               ))}
             </div>
+
+            <AddRoutineForm
+              categories={Object.keys(CATEGORY_COLORS)}
+              onAdd={(routine) => setRoutines(prev => [...prev, routine])}
+            />
           </div>
         )}
 
@@ -1491,5 +1695,80 @@ function RoutineDetail({ routine, session, now, isOtherSessionActive, onClose, o
         </div>
       </div>
     </div>
+  );
+}
+
+// --- SELECTOR DE DÍAS DE LA SEMANA (L M M J V S D) ---
+function DayToggles({ days, onChange }) {
+  const toggle = (d) => onChange(days.includes(d) ? days.filter(x => x !== d) : [...days, d].sort());
+  return (
+    <div className="flex gap-1">
+      {WEEKDAYS.map(w => (
+        <button
+          key={w.d}
+          type="button"
+          onClick={() => toggle(w.d)}
+          title={w.name}
+          className={`w-6 h-6 rounded-md text-[10px] font-bold transition ${
+            days.includes(w.d) ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-slate-500 border border-slate-700 hover:text-slate-300'
+          }`}
+        >
+          {w.short}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// --- NUEVA RUTINA PROPIA (por ejemplo, actividades del fin de semana) ---
+function AddRoutineForm({ categories, onAdd }) {
+  const [name, setName] = useState('');
+  const [minutes, setMinutes] = useState(30);
+  const [category, setCategory] = useState(categories[0]);
+  const [block, setBlock] = useState('free');
+  const [days, setDays] = useState([6, 0]);
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!name.trim() || days.length === 0) return;
+    onAdd({
+      id: `c${Date.now()}`, name: name.trim(), category, estimatedMin: Number(minutes) || 15,
+      actuals: [], isNonNegotiable: false, type: 'custom', steps: [], block, days,
+    });
+    setName('');
+  };
+
+  const field = 'bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200';
+  return (
+    <form onSubmit={submit} className="bg-slate-950 p-4 rounded-xl border border-dashed border-indigo-500/40 space-y-3">
+      <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+        <Plus className="w-4 h-4 text-indigo-400" /> Nueva rutina
+      </span>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="Ej. Súper y comidas de la semana" className={`${field} col-span-2`} />
+        <select value={category} onChange={e => setCategory(e.target.value)} className={field}>
+          {categories.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <label className="flex items-center gap-1.5 text-xs text-slate-400">
+          <input type="number" min={5} value={minutes} onChange={e => setMinutes(Number(e.target.value))} className={`${field} w-16 text-center`} /> min
+        </label>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-slate-400">Días:</span>
+          <DayToggles days={days} onChange={setDays} />
+        </div>
+        <label className="flex items-center gap-2 text-[10px] text-slate-400">
+          Bloque:
+          <select value={block} onChange={e => setBlock(e.target.value)} className={field}>
+            {Object.entries(BLOCKS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
+        </label>
+        <button type="submit" disabled={!name.trim() || days.length === 0}
+          className="ml-auto px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold">
+          Agregar rutina
+        </button>
+      </div>
+    </form>
   );
 }
