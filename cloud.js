@@ -5,8 +5,8 @@ import { fetchAuthSession } from 'aws-amplify/auth';
 
 const env = import.meta.env;
 const apiUrl = (env.VITE_API_URL || '').replace(/\/+$/, '');
-const userPoolId = env.VITE_COGNITO_USER_POOL_ID || '';
-const userPoolClientId = env.VITE_COGNITO_CLIENT_ID || '';
+const userPoolId = (env.VITE_COGNITO_USER_POOL_ID || '').trim();
+const userPoolClientId = (env.VITE_COGNITO_CLIENT_ID || '').trim();
 
 // Si algún valor no tiene el formato esperado, se queda en modo local en lugar de mostrar un login que no funciona
 const configValid = /^https:\/\/\S+$/.test(apiUrl)
