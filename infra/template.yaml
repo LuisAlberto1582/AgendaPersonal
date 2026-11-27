@@ -7,6 +7,16 @@ Parameters:
     Type: String
     Default: https://luisalberto1582.github.io
     Description: Origen de GitHub Pages permitido por CORS (sin ruta final)
+  DevOrigin:
+    Type: String
+    Default: http://localhost:5173
+    Description: Origen de "npm run dev" permitido por CORS para probar en local (la API exige token de todos modos)
+  LambdaRoleName:
+    Type: String
+    Default: mindflow-api-role
+    Description: >
+      Rol de ejecución de la Lambda, creado una vez por un administrador (infra/cloudshell-permisos.sh).
+      Así quien despliega no necesita permisos para crear roles de IAM.
 
 Resources:
   StateTable:
@@ -63,6 +73,7 @@ Resources:
       CorsConfiguration:
         AllowOrigins:
           - !Ref AllowedOrigin
+          - !Ref DevOrigin
         AllowMethods:
           - GET
           - PUT
@@ -88,12 +99,10 @@ Resources:
       CodeUri: src/
       MemorySize: 128
       Timeout: 10
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/${LambdaRoleName}
       Environment:
         Variables:
           TABLE_NAME: !Ref StateTable
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref StateTable
       Events:
         GetState:
           Type: HttpApi

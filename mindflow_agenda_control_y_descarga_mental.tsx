@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   Mic, MicOff, Plus, Play, Pause, Square, CheckCircle, Clock, 
   Calendar, Layers, Sparkles, Trash2, ArrowRight, TrendingUp, 
   AlertCircle, ChevronDown, ChevronRight, Home, Dog, Bus, 
-  ShieldCheck, RefreshCw, BarChart2, Check, Moon, Sun, Circle, ListChecks, X, Briefcase, Dumbbell, Heart
+  ShieldCheck, RefreshCw, BarChart2, Check, Moon, Sun, Circle, ListChecks, X, Briefcase, Dumbbell, Heart,
+  CloudOff, CloudAlert, CloudCheck, LogOut
 } from 'lucide-react';
+import { useCloudSync } from './useCloudSync.js';
 
 // Horario fijo del día: jornada laboral, hora de entrenar y sueño.
 // La hora de despertar y de dormir se calculan a partir del gym.
@@ -90,15 +92,28 @@ const toHHMM = (mins) => {
 
 const formatDuration = (mins) => `${Math.floor(mins / 60)} h${mins % 60 ? ` ${mins % 60} min` : ''}`;
 
-export default function App() {
+// Completa rutinas guardadas (en este dispositivo o en la nube) con lo que se agregó después a los valores por defecto
+const normalizeRoutines = (list) => {
+  // Rutinas guardadas antes de que existieran los pasos: tomar los pasos por defecto
+  const loaded = list.map(r => r.steps ? r : { ...r, steps: INITIAL_ROUTINES.find(i => i.id === r.id)?.steps || [] });
+  // Rutinas nuevas por defecto (ej. el gym) que aún no estaban guardadas
+  return [...loaded, ...INITIAL_ROUTINES.filter(i => !loaded.some(r => r.id === i.id))];
+};
+
+const SYNC_BADGES = {
+  loading: { Icon: RefreshCw, text: 'Conectando…', className: 'text-slate-400', spin: true },
+  saving: { Icon: RefreshCw, text: 'Guardando…', className: 'text-indigo-300', spin: true },
+  synced: { Icon: CloudCheck, text: 'En la nube', className: 'text-emerald-400' },
+  offline: { Icon: CloudOff, text: 'Sin conexión (se guarda aquí)', className: 'text-amber-400' },
+  error: { Icon: CloudAlert, text: 'Error al sincronizar', className: 'text-rose-400' },
+};
+
+// cloud: null en modo solo local, o { email, signOut, onAuthLost } con sesión iniciada
+export default function App({ cloud = null }) {
   // --- PERSISTENT STATES ---
   const [routines, setRoutines] = useState(() => {
     const saved = localStorage.getItem('mf_routines');
-    if (!saved) return INITIAL_ROUTINES;
-    // Rutinas guardadas antes de que existieran los pasos: tomar los pasos por defecto
-    const loaded = JSON.parse(saved).map(r => r.steps ? r : { ...r, steps: INITIAL_ROUTINES.find(i => i.id === r.id)?.steps || [] });
-    // Rutinas nuevas por defecto (ej. el gym) que aún no estaban guardadas
-    return [...loaded, ...INITIAL_ROUTINES.filter(i => !loaded.some(r => r.id === i.id))];
+    return saved ? normalizeRoutines(JSON.parse(saved)) : INITIAL_ROUTINES;
   });
 
   // Rutina paso a paso en curso: { routineId, startedAt, lapStartedAt, pausedAt, done: { [stepId]: segundos } }
@@ -151,6 +166,21 @@ export default function App() {
     if (stepSession) localStorage.setItem('mf_step_session', JSON.stringify(stepSession));
     else localStorage.removeItem('mf_step_session');
   }, [stepSession]);
+
+  // Respaldo en la nube (rutinas, bandeja y horario; la rutina en curso se queda en este dispositivo)
+  const syncedState = useMemo(() => ({ routines, inboxTasks, fixedSchedule }), [routines, inboxTasks, fixedSchedule]);
+  const applyRemoteState = useCallback((remote) => {
+    if (Array.isArray(remote.routines)) setRoutines(normalizeRoutines(remote.routines));
+    if (Array.isArray(remote.inboxTasks)) setInboxTasks(remote.inboxTasks);
+    if (remote.fixedSchedule) setFixedSchedule({ ...DEFAULT_SCHEDULE, ...remote.fixedSchedule });
+  }, []);
+  const syncStatus = useCloudSync({
+    enabled: Boolean(cloud),
+    state: syncedState,
+    applyRemote: applyRemoteState,
+    onAuthLost: cloud?.onAuthLost,
+  });
+  const syncBadge = SYNC_BADGES[syncStatus];
 
   // Reloj para la rutina paso a paso (se calcula con marcas de tiempo, sobrevive a recargas)
   useEffect(() => {
@@ -465,6 +495,22 @@ export default function App() {
             <div>
               <h1 className="font-bold text-lg leading-tight tracking-wide text-white">MindFlow Agenda</h1>
               <p className="text-xs text-slate-400">Descarga mental, rutinas reales y control de tiempo</p>
+              {cloud && syncBadge && (
+                <div className="flex items-center gap-2 mt-0.5 text-[11px]">
+                  <span className={`flex items-center gap-1 ${syncBadge.className}`} title={cloud.email}>
+                    <syncBadge.Icon className={`w-3.5 h-3.5 ${syncBadge.spin ? 'animate-spin' : ''}`} />
+                    {syncBadge.text}
+                  </span>
+                  <button
+                    onClick={cloud.signOut}
+                    className="flex items-center gap-1 text-slate-500 hover:text-slate-300"
+                    title={`Cerrar sesión de ${cloud.email}`}
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Salir
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 

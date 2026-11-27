@@ -23,6 +23,31 @@ Pages (frontend) → API Gateway (JWT) → Lambda → DynamoDB
    El registro abierto está desactivado.
 5. **Presupuesto.** AWS Billing → Budgets → crea una alerta mensual (por ejemplo 5 USD).
 
+## Alternativa: desplegar desde tu máquina
+Solo necesitas el AWS CLI v2 (no SAM CLI).
+
+1. **Permisos (una vez, como administrador en CloudShell).** Sube `infra/cloudshell-permisos.sh` a CloudShell
+   (*Actions → Upload file*) y ejecútalo con `bash cloudshell-permisos.sh`. El script:
+   - Crea el rol de la Lambda `mindflow-api-role`, que solo puede escribir logs y hacer `GetItem`/`PutItem` en tablas `mindflow-*`.
+   - Agrega a la política inline `gymtracker-deploy` de `Developer1` las secciones `Mindflow*`
+     (las mismas de `infra/local-deploy-policy.json`). No crea políticas nuevas, no toca las de gymtracker y
+     guarda un respaldo en `~/gymtracker-deploy.respaldo-*.json`.
+   - S3, API Gateway y DynamoDB no se agregan: ya los dan `AmazonS3FullAccess`, `AmazonAPIGatewayAdministrator` y
+     `AmazonDynamoDBFullAccess`.
+   - `Developer1` **no** puede crear roles: solo pasar `mindflow-api-role` a Lambda. Así no puede escalar a administrador.
+2. Ejecuta desde la raíz del repo:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File infra\deploy.ps1            # perfil y región por defecto
+   powershell -ExecutionPolicy Bypass -File infra\deploy.ps1 -AwsProfile otro -Region us-east-1
+   ```
+   El script crea (una vez) el bucket privado `mindflow-deploy-<cuenta>-<región>` para el código de la Lambda,
+   despliega el stack `mindflow` y muestra `ApiUrl`, `UserPoolId` y `UserPoolClientId`.
+3. Sigue con los pasos 4 y 5 de arriba.
+
+El stack es el mismo que crea GitHub Actions, así que puedes alternar entre ambos métodos. Si el stack ya existía
+con el rol que SAM creaba antes, el primer despliegue con `mindflow-api-role` debe borrar ese rol viejo: hazlo desde
+GitHub Actions (su rol sí puede borrar roles `mindflow-*`), no con `Developer1`.
+
 ## Qué protege qué
 - El rol de despliegue solo lo puede asumir el workflow de la rama `main` de este repo.
 - Ese rol tiene una política que **niega** leer o escribir items de DynamoDB: despliega infraestructura, no toca datos.
@@ -32,10 +57,39 @@ Pages (frontend) → API Gateway (JWT) → Lambda → DynamoDB
 
 ## API
 - `GET /state` → `{ state, updatedAt }` (`state: null` si aún no hay nada)
-- `PUT /state` con `{ "state": { ... } }` → `{ ok, updatedAt }` (máx. 300 KB)
+- `PUT /state` con `{ "state": { ... }, "baseUpdatedAt": "<versión>" | null }` → `{ ok, updatedAt }` (máx. 300 KB).
+  Si la nube ya no está en `baseUpdatedAt` responde `409` con `{ state, updatedAt }` actuales.
+  Sin `baseUpdatedAt` sobrescribe sin revisar.
 
 Ambas con el encabezado `Authorization: <IdToken de Cognito>`.
 
-## Pendiente
-Conectar el frontend: login con Cognito y sincronizar `mf_routines`, `mf_inbox`, `mf_schedule` con `/state`
-(hoy solo usa `localStorage`).
+## Conectar el frontend
+La app lee la configuración en tiempo de build. Sin ella funciona como antes (solo `localStorage`, sin login).
+
+1. Copia las salidas del stack `mindflow` (CloudFormation → *Outputs*, o el final de `deploy.ps1`).
+2. GitHub → Settings → Secrets and variables → Actions → pestaña **Variables**:
+   | Variable | Valor |
+   |---|---|
+   | `MINDFLOW_API_URL` | `ApiUrl` |
+   | `MINDFLOW_USER_POOL_ID` | `UserPoolId` |
+   | `MINDFLOW_USER_POOL_CLIENT_ID` | `UserPoolClientId` |
+
+   No son secretos: terminan dentro del JavaScript público. La API exige el token de Cognito de todos modos.
+3. Actions → *Publicar en GitHub Pages* → *Run workflow* para recompilar con esos valores.
+4. Abre la página e inicia sesión con el usuario del paso 4. La primera vez Cognito pide cambiar la contraseña
+   temporal; la app muestra ese paso.
+
+Para probar en local: copia `.env.example` como `.env.local`, pon los mismos valores y ejecuta `npm run dev`
+(CORS ya permite `http://localhost:5173`).
+
+### Cómo sincroniza
+- Se sincronizan rutinas (con sus tiempos medidos), la bandeja de tareas y el horario fijo. La rutina paso a paso
+  en curso se queda en el dispositivo donde empezó.
+- `localStorage` sigue siendo la copia de trabajo: la app funciona sin conexión y sube los cambios al reconectar.
+- Cada cambio se sube 1.5 s después de la última edición. Al volver a la pestaña se revisa si otro dispositivo
+  guardó algo.
+- Cada guardado indica sobre qué versión de la nube se hizo (`baseUpdatedAt`). Si otro dispositivo guardó antes,
+  la API responde `409` y la app pregunta cuál versión conservar, en vez de sobrescribir en silencio.
+- La primera vez que inicias sesión en un dispositivo que ya tenía datos: si la nube está vacía se suben; si no,
+  la app pregunta cuál conservar.
+- El indicador bajo el título muestra el estado (*En la nube*, *Guardando…*, *Sin conexión*, *Error*) y el botón *Salir*.

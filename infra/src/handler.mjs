@@ -25,15 +25,37 @@ export const handler = async (event) => {
   const raw = event.isBase64Encoded ? Buffer.from(event.body ?? '', 'base64').toString() : event.body ?? '';
   if (Buffer.byteLength(raw) > MAX_BYTES) return json(413, { error: 'state too large' });
 
-  let state;
+  let body;
   try {
-    state = JSON.parse(raw).state;
+    body = JSON.parse(raw);
   } catch {
     return json(400, { error: 'invalid json' });
   }
+  const state = body?.state;
   if (state === null || typeof state !== 'object') return json(400, { error: 'state must be an object' });
 
-  const updatedAt = new Date().toISOString();
-  await db.send(new PutCommand({ TableName: TABLE, Item: { pk: sub, state, updatedAt } }));
-  return json(200, { ok: true, updatedAt });
+  // Control de concurrencia opcional: si el cliente manda baseUpdatedAt (la versión sobre la que editó),
+  // solo se guarda si la nube sigue en esa versión; null significa "aún no hay nada guardado".
+  const put = { TableName: TABLE, Item: { pk: sub, state, updatedAt: new Date().toISOString() } };
+  if ('baseUpdatedAt' in body) {
+    const base = body.baseUpdatedAt;
+    if (base === null) {
+      put.ConditionExpression = 'attribute_not_exists(pk)';
+    } else if (typeof base === 'string') {
+      put.ConditionExpression = 'updatedAt = :base';
+      put.ExpressionAttributeValues = { ':base': base };
+    } else {
+      return json(400, { error: 'baseUpdatedAt must be a string or null' });
+    }
+  }
+
+  try {
+    await db.send(new PutCommand(put));
+  } catch (err) {
+    if (err.name !== 'ConditionalCheckFailedException') throw err;
+    // Otro dispositivo guardó antes: se devuelve la versión actual para que el cliente decida
+    const { Item } = await db.send(new GetCommand({ TableName: TABLE, Key: { pk: sub } }));
+    return json(409, { error: 'conflict', state: Item?.state ?? null, updatedAt: Item?.updatedAt ?? null });
+  }
+  return json(200, { ok: true, updatedAt: put.Item.updatedAt });
 };
