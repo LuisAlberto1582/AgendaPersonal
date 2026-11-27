@@ -8,7 +8,16 @@ const apiUrl = (env.VITE_API_URL || '').replace(/\/+$/, '');
 const userPoolId = env.VITE_COGNITO_USER_POOL_ID || '';
 const userPoolClientId = env.VITE_COGNITO_CLIENT_ID || '';
 
-export const cloudEnabled = Boolean(apiUrl && userPoolId && userPoolClientId);
+// Si algún valor no tiene el formato esperado, se queda en modo local en lugar de mostrar un login que no funciona
+const configValid = /^https:\/\/\S+$/.test(apiUrl)
+  && /^[a-z]{2}(-[a-z]+)+-\d_[A-Za-z0-9]+$/.test(userPoolId)
+  && /^[a-z0-9]{20,}$/.test(userPoolClientId);
+
+if ((apiUrl || userPoolId || userPoolClientId) && !configValid) {
+  console.warn('Configuración de la nube inválida; la agenda funciona solo en este dispositivo.', { apiUrl, userPoolId, userPoolClientId });
+}
+
+export const cloudEnabled = configValid;
 
 if (cloudEnabled) {
   Amplify.configure({ Auth: { Cognito: { userPoolId, userPoolClientId } } });

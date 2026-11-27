@@ -68,11 +68,13 @@ La app lee la configuración en tiempo de build. Sin ella funciona como antes (s
 
 1. Copia las salidas del stack `mindflow` (CloudFormation → *Outputs*, o el final de `deploy.ps1`).
 2. GitHub → Settings → Secrets and variables → Actions → pestaña **Variables**:
-   | Variable | Valor |
-   |---|---|
-   | `MINDFLOW_API_URL` | `ApiUrl` |
-   | `MINDFLOW_USER_POOL_ID` | `UserPoolId` |
-   | `MINDFLOW_USER_POOL_CLIENT_ID` | `UserPoolClientId` |
+   | Variable | Toma el valor de la salida | Ejemplo de formato |
+   |---|---|---|
+   | `MINDFLOW_API_URL` | `ApiUrl` | `https://abc123xyz0.execute-api.us-east-1.amazonaws.com` |
+   | `MINDFLOW_USER_POOL_ID` | `UserPoolId` | `us-east-1_AbCdEfGhI` |
+   | `MINDFLOW_USER_POOL_CLIENT_ID` | `UserPoolClientId` | `1a2b3c4d5e6f7g8h9i0j1k2l3m` |
+
+   Pega el **valor** de cada salida, no su nombre. Si el formato no es válido, la app se queda en modo local.
 
    No son secretos: terminan dentro del JavaScript público. La API exige el token de Cognito de todos modos.
 3. Actions → *Publicar en GitHub Pages* → *Run workflow* para recompilar con esos valores.
