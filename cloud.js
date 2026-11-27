@@ -4,7 +4,7 @@ import { Amplify } from 'aws-amplify';
 import { fetchAuthSession } from 'aws-amplify/auth';
 
 const env = import.meta.env;
-const apiUrl = (env.VITE_API_URL || '').replace(/\/+$/, '');
+const apiUrl = (env.VITE_API_URL || '').trim().replace(/\/+$/, '');
 const userPoolId = (env.VITE_COGNITO_USER_POOL_ID || '').trim();
 const userPoolClientId = (env.VITE_COGNITO_CLIENT_ID || '').trim();
 
